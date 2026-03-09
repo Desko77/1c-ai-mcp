@@ -1,0 +1,36 @@
+# Docker Compose для MCP-сервера 1С:Напарник
+# Оригинальная идея: https://github.com/comol/1c-code-checker
+# Алгоритмы API: https://github.com/SteelMorgan/spring-mcp-1c-copilot
+
+services:
+  1c-code-checker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: 1c-code-checker
+    ports:
+      - "8007:8007"
+    environment:
+      ONEC_AI_TOKEN: "${ONEC_AI_TOKEN}"
+      ONEC_AI_TOKEN_FILE: ""
+      ONEC_AI_BASE_URL: "https://code.1c.ai"
+      ONEC_AI_TIMEOUT: "30"
+      ONEC_AI_SKILL_NAME: "raw"
+      ONEC_AI_AUTH_FORMAT: "plain"
+      HTTP_PORT: "8007"
+      USESSE: "false"
+      MAX_ACTIVE_SESSIONS: "10"
+      SESSION_TTL: "3600"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8007/mcp"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+    networks:
+      - mcp-network
+
+networks:
+  mcp-network:
+    driver: bridge
