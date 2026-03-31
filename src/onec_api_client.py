@@ -24,6 +24,8 @@ class SSEParseResult:
     text: str = ""
     has_tool_calls: bool = False
     has_only_reasoning: bool = False
+    tool_calls_data: Optional[List[Dict[str, Any]]] = None
+    assistant_uuid: Optional[str] = None
 
 
 class ConversationRequest(BaseModel):
@@ -81,6 +83,27 @@ def _strip_thinking_tags(text: str) -> str:
     return _THINKING_RE.sub('', text).strip()
 
 
+class DirectToolError(Exception):
+    """Ошибка при прямом вызове upstream-инструмента."""
+
+    def __init__(
+        self,
+        tool_name: str,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None,
+    ):
+        self.tool_name = tool_name
+        self.reason = reason
+        self.details = details or {}
+        super().__init__(f"Direct call to '{tool_name}' failed: {reason}")
+
+    def diagnostic_summary(self) -> str:
+        parts = [f"tool={self.tool_name}", f"reason={self.reason}"]
+        if self.details:
+            parts.append(f"details={self.details}")
+        return " | ".join(parts)
+
+
 class OneCApiClient:
     """Клиент для работы с API 1С:Напарник."""
 
@@ -121,14 +144,16 @@ class OneCApiClient:
         self,
         programming_language: Optional[str] = None,
         script_language: Optional[str] = None,
-        skill_name_override: Optional[str] = None
+        skill_name_override: Optional[str] = None,
+        tool_name: Optional[str] = None
     ) -> str:
         """Создать новую дискуссию."""
         try:
             effective_skill = skill_name_override or self.skill_name
+            effective_tool = tool_name or "custom"
 
             request_dict = {
-                "tool_name": "custom",
+                "tool_name": effective_tool,
                 "skill_name": effective_skill,
                 "ui_language": "russian",
                 "is_chat": True
@@ -255,6 +280,10 @@ class OneCApiClient:
             if not isinstance(data, dict):
                 continue
 
+            # Захват assistant UUID
+            if data.get("role") == "assistant" and data.get("uuid"):
+                result.assistant_uuid = data["uuid"]
+
             # Отслеживание tool_calls
             if "tool_calls" in data:
                 result.has_tool_calls = True
@@ -300,8 +329,10 @@ class OneCApiClient:
                     has_content_text = True
                     result.text = text
                 # Отслеживание tool_calls внутри content
-                if content.get("tool_calls"):
+                tc = content.get("tool_calls")
+                if tc:
                     result.has_tool_calls = True
+                    result.tool_calls_data = tc
                 # Reasoning внутри content
                 if content.get("reasoning_content"):
                     has_reasoning = True
@@ -324,6 +355,272 @@ class OneCApiClient:
             result.has_only_reasoning = True
 
         return result
+
+    def _parse_sse_text(self, text: str) -> SSEParseResult:
+        """Парсинг SSE из текстовой строки (не-стриминговый ответ)."""
+        result = SSEParseResult()
+        accumulated_delta = ""
+        has_content_text = False
+
+        for line in text.split("\n"):
+            if not line.startswith("data: "):
+                continue
+
+            data_str = line[6:]
+            if data_str.strip() == "[DONE]":
+                break
+
+            try:
+                data = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(data, dict):
+                continue
+
+            # Захват assistant UUID
+            if data.get("role") == "assistant" and data.get("uuid"):
+                result.assistant_uuid = data["uuid"]
+
+            # Top-level tool_calls (аналогично _parse_sse_response)
+            if "tool_calls" in data and not isinstance(data.get("content"), dict):
+                result.has_tool_calls = True
+                if isinstance(data["tool_calls"], list):
+                    result.tool_calls_data = data["tool_calls"]
+
+            # Формат content_delta
+            content_delta = data.get("content_delta")
+            if content_delta:
+                if isinstance(content_delta, str):
+                    accumulated_delta += content_delta
+                elif isinstance(content_delta, dict):
+                    delta_text = content_delta.get("content", "")
+                    if delta_text:
+                        accumulated_delta += delta_text
+
+            # Формат content (финальный)
+            content = data.get("content", {})
+            if isinstance(content, dict):
+                text_val = content.get("text", "") or content.get("content", "")
+                if text_val:
+                    has_content_text = True
+                    result.text = text_val
+                tc = content.get("tool_calls")
+                if tc:
+                    result.has_tool_calls = True
+                    result.tool_calls_data = tc
+
+        if has_content_text and result.text:
+            pass
+        elif accumulated_delta:
+            result.text = accumulated_delta
+
+        result.text = result.text.strip()
+        return result
+
+    async def send_message_with_tool_chain(
+        self,
+        conversation_id: str,
+        message: str,
+        max_tool_rounds: int = 10
+    ) -> str:
+        """Отправить сообщение и следовать цепочке tool_calls до текстового ответа.
+
+        Используется для инструментов документации (ИТС, справка платформы).
+        API 1С:Напарник с skill_name='custom' возвращает tool_calls для серверных
+        инструментов (Search_ITS, Fetch_ITS и т.д.). Клиент подтверждает каждый
+        вызов (status='accepted'), сервер выполняет поиск, модель формирует ответ.
+        """
+        url = f"{self.base_url}/chat_api/v1/conversations/{conversation_id}/messages"
+
+        # Шаг 1: отправить пользовательское сообщение
+        request_data = MessageRequest.create(message)
+        response = await self.client.post(
+            url,
+            json=request_data.model_dump(),
+            headers={"Accept": "text/event-stream"}
+        )
+        if response.status_code != 200:
+            raise Exception(f"Ошибка отправки: {response.status_code} - {response.text[:500]}")
+
+        result = self._parse_sse_text(response.text)
+
+        # Шаг 2: следовать цепочке tool_calls
+        for i in range(max_tool_rounds):
+            if not result.tool_calls_data or not result.assistant_uuid:
+                break
+
+            call_id = result.tool_calls_data[0].get("id")
+            fn = result.tool_calls_data[0].get("function", {})
+            logger.info(f"Tool chain step {i+1}: {fn.get('name')}({fn.get('arguments', '')})")
+
+            if not call_id:
+                logger.warning("tool_call без id, прерываем цепочку")
+                break
+
+            # Подтвердить вызов серверного инструмента
+            ack_payload = {
+                "parent_uuid": result.assistant_uuid,
+                "role": "tool",
+                "content": [{
+                    "tool_call_id": call_id,
+                    "status": "accepted",
+                    "content": None
+                }]
+            }
+
+            response = await self.client.post(
+                url,
+                json=ack_payload,
+                headers={"Accept": "text/event-stream"}
+            )
+            if response.status_code != 200:
+                logger.error(f"Ошибка ACK tool_call: {response.status_code} - {response.text[:300]}")
+                break
+
+            result = self._parse_sse_text(response.text)
+
+        clean_text = _strip_thinking_tags(result.text)
+        if not clean_text:
+            return "Ошибка: API не вернул текстовый ответ после цепочки tool_calls"
+        return clean_text
+
+    async def call_exact_tool(
+        self,
+        conversation_id: str,
+        tool_name: str,
+        arguments: Dict[str, Any],
+    ) -> str:
+        """Вызвать конкретный upstream-инструмент напрямую (direct mode).
+
+        Отправляет сообщение, ожидает tool_calls, матчит по имени, ACK-ает,
+        возвращает текстовый результат. При сбое - DirectToolError.
+        """
+        url = f"{self.base_url}/chat_api/v1/conversations/{conversation_id}/messages"
+
+        # Шаг 1: отправить сообщение с подсказкой вызвать конкретный инструмент
+        args_json = json.dumps(arguments, ensure_ascii=False)
+        instruction = (
+            f"Call tool {tool_name} with arguments: {args_json}\n"
+            f"Use ONLY this tool. Do not search or reason, just call the tool."
+        )
+        request_data = MessageRequest.create(instruction)
+
+        response = await self.client.post(
+            url,
+            json=request_data.model_dump(),
+            headers={"Accept": "text/event-stream"}
+        )
+        if response.status_code != 200:
+            raise DirectToolError(
+                tool_name, f"HTTP {response.status_code}",
+                {"body": response.text[:500]}
+            )
+
+        result = self._parse_sse_text(response.text)
+
+        # Шаг 2: найти ожидаемый tool_call по имени
+        if not result.tool_calls_data:
+            raise DirectToolError(
+                tool_name, "no_tool_calls",
+                {"text": result.text[:200]}
+            )
+
+        matched_call = None
+        for tc in result.tool_calls_data:
+            fn = tc.get("function", {})
+            fn_name = fn.get("name", "")
+            logger.debug(f"Direct mode: tool_call found: {fn_name}")
+            if fn_name == tool_name:
+                matched_call = tc
+                break
+
+        if not matched_call:
+            actual_names = [
+                tc.get("function", {}).get("name", "?")
+                for tc in result.tool_calls_data
+            ]
+            raise DirectToolError(
+                tool_name, "tool_name_mismatch",
+                {"expected": tool_name, "actual": actual_names}
+            )
+
+        call_id = matched_call.get("id")
+        if not call_id or not result.assistant_uuid:
+            raise DirectToolError(tool_name, "missing_call_id_or_uuid")
+
+        logger.debug(
+            f"Direct tool call matched: tool={tool_name}, "
+            f"call_id={call_id}, conversation={conversation_id}"
+        )
+
+        # Шаг 3: ACK tool_call
+        ack_payload = {
+            "parent_uuid": result.assistant_uuid,
+            "role": "tool",
+            "content": [{
+                "tool_call_id": call_id,
+                "status": "accepted",
+                "content": None
+            }]
+        }
+
+        response = await self.client.post(
+            url,
+            json=ack_payload,
+            headers={"Accept": "text/event-stream"}
+        )
+        if response.status_code != 200:
+            raise DirectToolError(
+                tool_name, f"ACK HTTP {response.status_code}",
+                {"body": response.text[:300]}
+            )
+
+        result = self._parse_sse_text(response.text)
+
+        # Шаг 4: следовать дальнейшим tool_calls (цепочка)
+        for i in range(9):
+            if not result.tool_calls_data or not result.assistant_uuid:
+                break
+
+            next_call = result.tool_calls_data[0]
+            next_id = next_call.get("id")
+            if not next_id:
+                break
+
+            fn = next_call.get("function", {})
+            logger.debug(f"Direct mode chain step {i+1}: {fn.get('name')}")
+
+            ack_payload = {
+                "parent_uuid": result.assistant_uuid,
+                "role": "tool",
+                "content": [{
+                    "tool_call_id": next_id,
+                    "status": "accepted",
+                    "content": None
+                }]
+            }
+
+            response = await self.client.post(
+                url,
+                json=ack_payload,
+                headers={"Accept": "text/event-stream"}
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    f"Direct mode chain ACK failed: step={i+1}, "
+                    f"status={response.status_code}"
+                )
+                break
+
+            result = self._parse_sse_text(response.text)
+
+        # Шаг 5: извлечь текст
+        final_text = _strip_thinking_tags(result.text)
+        if not final_text:
+            raise DirectToolError(tool_name, "empty_response_after_tool_chain")
+
+        return final_text
 
     async def get_or_create_session(
         self,

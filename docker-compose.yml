@@ -14,16 +14,18 @@ services:
       ONEC_AI_TOKEN: "${ONEC_AI_TOKEN}"
       ONEC_AI_TOKEN_FILE: ""
       ONEC_AI_BASE_URL: "https://code.1c.ai"
-      ONEC_AI_TIMEOUT: "30"
+      ONEC_AI_TIMEOUT: "120"
       ONEC_AI_SKILL_NAME: "raw"
       ONEC_AI_AUTH_FORMAT: "plain"
       HTTP_PORT: "8007"
       USESSE: "false"
       MAX_ACTIVE_SESSIONS: "10"
       SESSION_TTL: "3600"
-    restart: unless-stopped
+      MCP_TOOL_CALL_MODE: "standard"
+      ONEC_AI_INPUT_MAX_LENGTH: "100000"
+    restart: always
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8007/mcp"]
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8007),2); s.close()\""]
       interval: 30s
       timeout: 3s
       retries: 3
