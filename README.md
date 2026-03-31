@@ -7,7 +7,7 @@ MCP-сервер (Model Context Protocol) для интеграции IDE с API
 
 **12 инструментов**: анализ кода (проверка, ревью, рефакторинг) и поиск в документации (ИТС, платформа, конфигурации).
 
-Форк [comol/1c-code-checker](https://github.com/comol/1c-code-checker) с исправлениями API-формата (ошибки 422), заимствованными из [SteelMorgan/spring-mcp-1c-copilot](https://github.com/SteelMorgan/spring-mcp-1c-copilot).
+Основан на идее comol/1c-code-checker с исправлениями API-формата (ошибки 422), заимствованными из [SteelMorgan/spring-mcp-1c-copilot](https://github.com/SteelMorgan/spring-mcp-1c-copilot).
 
 ## Предварительные требования
 
@@ -324,7 +324,7 @@ tests/                         # Тестовые скрипты
 
 ## Благодарности
 
-- [comol/1c-code-checker](https://github.com/comol/1c-code-checker) - оригинальная идея
+- comol/1c-code-checker - оригинальная идея (репозиторий закрыт)
 - [SteelMorgan/spring-mcp-1c-copilot](https://github.com/SteelMorgan/spring-mcp-1c-copilot) - правильные алгоритмы API
 - [FastMCP](https://github.com/jlowin/fastmcp) - фреймворк MCP-серверов
 
