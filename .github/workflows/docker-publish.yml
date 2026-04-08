@@ -10,7 +10,7 @@ on:
 
 env:
   REGISTRY: docker.io
-  IMAGE_NAME: desko77/1c-code-checker
+  IMAGE_NAME: desko77/1c-ai-mcp
 
 jobs:
   build-and-push:

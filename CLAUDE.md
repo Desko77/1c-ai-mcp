@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MCP-сервер (Model Context Protocol) для интеграции с API 1С:Напарник (code.1c.ai). Построен на FastMCP (Python), упакован в Docker. Предоставляет 12 инструментов: анализ кода (`check_1c_code`, `ask_1c_ai`, `explain_1c_syntax`, `review_1c_code`, `rewrite_1c_code`, `modify_1c_code`) и документация (`its_help`, `fetch_its`, `search_1c_documentation`, `onec_help`, `diff_1c_documentation_versions`, `config_help`) - все через HTTP API 1С:Напарник.
 
-Форк/переработка `comol/1c-code-checker` с исправлениями формата API-запросов (ошибки 422), заимствованными из `SteelMorgan/spring-mcp-1c-copilot`.
+Основан на идее `comol/1c-code-checker` с исправлениями формата API-запросов (ошибки 422), заимствованными из `SteelMorgan/spring-mcp-1c-copilot`.
 
 ## Architecture
 
@@ -32,10 +32,10 @@ tests/                   ← тестовые скрипты
 
 ```bash
 # Docker build
-docker build -t 1c-code-checker .
+docker build -t 1c-ai-mcp .
 
 # Docker run
-docker run -d -p 8007:8007 -e ONEC_AI_TOKEN="token" 1c-code-checker
+docker run -d -p 8007:8007 -e ONEC_AI_TOKEN="token" 1c-ai-mcp
 
 # Docker Compose
 docker compose up -d

@@ -17,7 +17,7 @@ logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
 
 # Инициализация FastMCP сервера
-mcp = FastMCP("1C_Copilot")
+mcp = FastMCP("1C_AI")
 
 # Глобальные переменные
 _api_client: Optional[OneCApiClient] = None

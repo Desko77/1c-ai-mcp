@@ -3,11 +3,11 @@
 # Алгоритмы API: https://github.com/SteelMorgan/spring-mcp-1c-copilot
 
 services:
-  1c-code-checker:
+  1c-ai-mcp:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: 1c-code-checker
+    container_name: 1c-ai-mcp
     ports:
       - "8007:8007"
     environment:

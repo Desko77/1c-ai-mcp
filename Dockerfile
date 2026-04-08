@@ -1,4 +1,4 @@
-# Dockerfile для FastMCP сервера с исправленными алгоритмами API
+# Dockerfile для MCP-сервера 1С:Напарник (1c-ai-mcp)
 # Оригинальная идея: https://github.com/comol/1c-code-checker
 # Алгоритмы API: https://github.com/SteelMorgan/spring-mcp-1c-copilot
 

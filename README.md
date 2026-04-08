@@ -1,6 +1,6 @@
-# 1C Code Checker - MCP-сервер для 1С:Напарник
+# 1C AI MCP - MCP-сервер для 1С:Напарник
 
-[![Docker Hub](https://img.shields.io/docker/pulls/desko77/1c-code-checker)](https://hub.docker.com/r/desko77/1c-code-checker)
+[![Docker Hub](https://img.shields.io/docker/pulls/desko77/1c-ai-mcp)](https://hub.docker.com/r/desko77/1c-ai-mcp)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 MCP-сервер (Model Context Protocol) для интеграции IDE с API [1С:Напарник](https://code.1c.ai). Построен на FastMCP (Python), упакован в Docker. Работает с Cursor, Claude Code и любыми MCP-совместимыми клиентами.
@@ -19,18 +19,18 @@ MCP-сервер (Model Context Protocol) для интеграции IDE с API
 ### Вариант A: Готовый образ из Docker Hub (рекомендуется)
 
 ```bash
-docker run -d --name 1c-code-checker -p 8007:8007 \
+docker run -d --name 1c-ai-mcp -p 8007:8007 \
   -e ONEC_AI_TOKEN="ваш-токен" \
-  desko77/1c-code-checker:latest
+  desko77/1c-ai-mcp:latest
 ```
 
 Или через Docker Compose - создайте файл `docker-compose.yml`:
 
 ```yaml
 services:
-  1c-code-checker:
-    image: desko77/1c-code-checker:latest
-    container_name: 1c-code-checker
+  1c-ai-mcp:
+    image: desko77/1c-ai-mcp:latest
+    container_name: 1c-ai-mcp
     ports:
       - "8007:8007"
     environment:
@@ -49,8 +49,8 @@ docker compose up -d
 ### Вариант B: Сборка из исходников
 
 ```bash
-git clone https://github.com/Desko77/1c-code-checker.git
-cd 1c-code-checker
+git clone https://github.com/Desko77/1c-ai-mcp.git
+cd 1c-ai-mcp
 
 # Создать .env с токеном
 echo 'ONEC_AI_TOKEN=ваш-токен' > .env
@@ -75,7 +75,7 @@ curl http://localhost:8007/mcp
 ```json
 {
   "mcpServers": {
-    "1c-code-checker": {
+    "1c-naparnik": {
       "url": "http://localhost:8007/mcp"
     }
   }
@@ -89,7 +89,7 @@ curl http://localhost:8007/mcp
 ```json
 {
   "mcpServers": {
-    "1c-code-checker": {
+    "1c-naparnik": {
       "url": "http://localhost:8007/mcp"
     }
   }
@@ -241,8 +241,8 @@ Code review: стиль, стандарты ИТС, именование, стр
 
 ```yaml
 services:
-  1c-code-checker:
-    image: desko77/1c-code-checker:latest
+  1c-ai-mcp:
+    image: desko77/1c-ai-mcp:latest
     environment:
       ONEC_AI_TOKEN_FILE: /run/secrets/onec_token
     secrets:
