@@ -83,6 +83,41 @@ def _strip_thinking_tags(text: str) -> str:
     return _THINKING_RE.sub('', text).strip()
 
 
+def _unwrap_tool_result(text: str) -> str:
+    """Распаковать текстовый результат внутреннего MCP-инструмента 1С:Напарник."""
+    current = text.strip()
+    for _ in range(3):
+        try:
+            payload = json.loads(current)
+        except (TypeError, json.JSONDecodeError):
+            break
+
+        extracted = None
+        if isinstance(payload, dict):
+            content = payload.get("content")
+            if isinstance(content, str):
+                extracted = content
+            elif isinstance(content, list):
+                parts = [
+                    item.get("text", "")
+                    for item in content
+                    if isinstance(item, dict) and item.get("type") == "text"
+                ]
+                if parts:
+                    extracted = "\n".join(parts)
+
+            if extracted is None:
+                structured = payload.get("structuredContent")
+                if isinstance(structured, str):
+                    extracted = structured
+
+        if not isinstance(extracted, str) or not extracted.strip():
+            break
+        current = extracted.strip()
+
+    return current
+
+
 class DirectToolError(Exception):
     """Ошибка при прямом вызове upstream-инструмента."""
 
@@ -210,46 +245,91 @@ class OneCApiClient:
             self.sessions[conversation_id].update_usage()
 
             request_data = MessageRequest.create(message)
-
-            url = f"{self.base_url}/chat_api/v1/conversations/{conversation_id}/messages"
-
-            async with self.client.stream(
-                "POST",
-                url,
-                json=request_data.model_dump(),
-                headers={"Accept": "text/event-stream"}
-            ) as response:
-
-                if response.status_code != 200:
-                    error_text = await response.aread()
-                    error_details = error_text.decode('utf-8', errors='ignore')[:500]
-                    logger.error(f"Ошибка отправки сообщения {response.status_code}: {error_details}")
-                    raise Exception(f"Ошибка отправки сообщения: {response.status_code} - {error_details}")
-
-                parse_result = await self._parse_sse_response(response)
-
-            # Fallback: если получены tool_calls — повторить с skill_name="raw"
-            if parse_result.has_tool_calls and not _is_retry:
-                logger.warning("Ответ содержит tool_calls, повторяем с skill_name='raw'")
-                fallback_conv_id = await self.create_conversation(skill_name_override="raw")
-                return await self.send_message(fallback_conv_id, message, _is_retry=True)
-
-            if parse_result.has_tool_calls and _is_retry:
-                return "Ошибка: API вернул tool_calls повторно после fallback на skill 'raw'"
-
-            if parse_result.has_only_reasoning:
-                return "Ошибка: API вернул только reasoning без итогового ответа"
-
-            # Удаляем thinking-теги из ответа
-            clean_text = _strip_thinking_tags(parse_result.text)
-
-            logger.info(f"Получен ответ для дискуссии {conversation_id}")
-            return clean_text
+            return await self._send_message_chain(
+                conversation_id,
+                request_data.model_dump(),
+            )
 
         except httpx.RequestError as e:
             raise Exception(f"Ошибка сети при отправке сообщения: {str(e)}")
         except Exception as e:
             raise Exception(f"Неожиданная ошибка при отправке сообщения: {str(e)}")
+
+    @staticmethod
+    def _build_tool_ack(assistant_uuid: str, tool_calls: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Подтвердить все вызовы, запрошенные API 1С:Напарник."""
+        accepted_calls = []
+        for tool_call in tool_calls:
+            call_id = tool_call.get("id")
+            if call_id:
+                accepted_calls.append({
+                    "tool_call_id": call_id,
+                    "status": "accepted",
+                    "content": None,
+                })
+
+        return {
+            "parent_uuid": assistant_uuid,
+            "role": "tool",
+            "content": accepted_calls,
+        }
+
+    async def _send_message_chain(
+        self,
+        conversation_id: str,
+        request_payload: Dict[str, Any],
+        max_tool_rounds: int = 10,
+    ) -> str:
+        """Отправить запрос и завершить последовательность внутренних tool_calls."""
+        url = f"{self.base_url}/chat_api/v1/conversations/{conversation_id}/messages"
+
+        for round_number in range(max_tool_rounds + 1):
+            async with self.client.stream(
+                "POST",
+                url,
+                json=request_payload,
+                headers={"Accept": "text/event-stream"},
+            ) as response:
+                if response.status_code != 200:
+                    error_text = await response.aread()
+                    error_details = error_text.decode("utf-8", errors="ignore")[:500]
+                    logger.error(
+                        "Ошибка отправки сообщения %s: %s",
+                        response.status_code,
+                        error_details,
+                    )
+                    raise Exception(
+                        f"Ошибка отправки сообщения: {response.status_code} - {error_details}"
+                    )
+                parse_result = await self._parse_sse_response(response)
+
+            if not parse_result.has_tool_calls:
+                if parse_result.has_only_reasoning:
+                    return "Ошибка: API вернул только reasoning без итогового ответа"
+                clean_text = _unwrap_tool_result(_strip_thinking_tags(parse_result.text))
+                logger.info("Получен ответ для дискуссии %s", conversation_id)
+                return clean_text
+
+            if not parse_result.tool_calls_data or not parse_result.assistant_uuid:
+                return "Ошибка: API вернул tool_calls без идентификатора сообщения"
+
+            if round_number >= max_tool_rounds:
+                return "Ошибка: превышен лимит обработки tool_calls 1С:Напарник"
+
+            request_payload = self._build_tool_ack(
+                parse_result.assistant_uuid,
+                parse_result.tool_calls_data,
+            )
+            if not request_payload["content"]:
+                return "Ошибка: API вернул tool_calls без идентификаторов вызовов"
+
+            logger.info(
+                "Подтверждаем %s tool_calls (шаг %s)",
+                len(request_payload["content"]),
+                round_number + 1,
+            )
+
+        return "Ошибка: превышен лимит обработки tool_calls 1С:Напарник"
 
     async def _parse_sse_response(self, response: httpx.Response) -> SSEParseResult:
         """Парсинг Server-Sent Events ответа с поддержкой всех форматов."""
@@ -287,6 +367,8 @@ class OneCApiClient:
             # Отслеживание tool_calls
             if "tool_calls" in data:
                 result.has_tool_calls = True
+                if isinstance(data["tool_calls"], list):
+                    result.tool_calls_data = data["tool_calls"]
                 logger.debug("SSE chunk содержит tool_calls")
 
             choices = data.get("choices")
@@ -297,6 +379,8 @@ class OneCApiClient:
                     if isinstance(delta, dict):
                         if "tool_calls" in delta:
                             result.has_tool_calls = True
+                            if isinstance(delta["tool_calls"], list):
+                                result.tool_calls_data = delta["tool_calls"]
                         if "content" in delta and delta["content"]:
                             accumulated_delta += delta["content"]
                         if delta.get("reasoning") or delta.get("reasoning_content"):
@@ -320,6 +404,10 @@ class OneCApiClient:
                     delta_text = content_delta.get("content", "")
                     if delta_text:
                         accumulated_delta += delta_text
+                    tc = content_delta.get("tool_calls")
+                    if tc:
+                        result.has_tool_calls = True
+                        result.tool_calls_data = tc
 
             # Формат Completed: content.text или content.content (финальный — перезаписывает)
             content = data.get("content", {})
@@ -383,7 +471,7 @@ class OneCApiClient:
                 result.assistant_uuid = data["uuid"]
 
             # Top-level tool_calls (аналогично _parse_sse_response)
-            if "tool_calls" in data and not isinstance(data.get("content"), dict):
+            if "tool_calls" in data:
                 result.has_tool_calls = True
                 if isinstance(data["tool_calls"], list):
                     result.tool_calls_data = data["tool_calls"]
@@ -397,6 +485,10 @@ class OneCApiClient:
                     delta_text = content_delta.get("content", "")
                     if delta_text:
                         accumulated_delta += delta_text
+                    tc = content_delta.get("tool_calls")
+                    if tc:
+                        result.has_tool_calls = True
+                        result.tool_calls_data = tc
 
             # Формат content (финальный)
             content = data.get("content", {})
@@ -431,59 +523,12 @@ class OneCApiClient:
         инструментов (Search_ITS, Fetch_ITS и т.д.). Клиент подтверждает каждый
         вызов (status='accepted'), сервер выполняет поиск, модель формирует ответ.
         """
-        url = f"{self.base_url}/chat_api/v1/conversations/{conversation_id}/messages"
-
-        # Шаг 1: отправить пользовательское сообщение
         request_data = MessageRequest.create(message)
-        response = await self.client.post(
-            url,
-            json=request_data.model_dump(),
-            headers={"Accept": "text/event-stream"}
+        return await self._send_message_chain(
+            conversation_id,
+            request_data.model_dump(),
+            max_tool_rounds,
         )
-        if response.status_code != 200:
-            raise Exception(f"Ошибка отправки: {response.status_code} - {response.text[:500]}")
-
-        result = self._parse_sse_text(response.text)
-
-        # Шаг 2: следовать цепочке tool_calls
-        for i in range(max_tool_rounds):
-            if not result.tool_calls_data or not result.assistant_uuid:
-                break
-
-            call_id = result.tool_calls_data[0].get("id")
-            fn = result.tool_calls_data[0].get("function", {})
-            logger.info(f"Tool chain step {i+1}: {fn.get('name')}({fn.get('arguments', '')})")
-
-            if not call_id:
-                logger.warning("tool_call без id, прерываем цепочку")
-                break
-
-            # Подтвердить вызов серверного инструмента
-            ack_payload = {
-                "parent_uuid": result.assistant_uuid,
-                "role": "tool",
-                "content": [{
-                    "tool_call_id": call_id,
-                    "status": "accepted",
-                    "content": None
-                }]
-            }
-
-            response = await self.client.post(
-                url,
-                json=ack_payload,
-                headers={"Accept": "text/event-stream"}
-            )
-            if response.status_code != 200:
-                logger.error(f"Ошибка ACK tool_call: {response.status_code} - {response.text[:300]}")
-                break
-
-            result = self._parse_sse_text(response.text)
-
-        clean_text = _strip_thinking_tags(result.text)
-        if not clean_text:
-            return "Ошибка: API не вернул текстовый ответ после цепочки tool_calls"
-        return clean_text
 
     async def call_exact_tool(
         self,
@@ -616,7 +661,7 @@ class OneCApiClient:
             result = self._parse_sse_text(response.text)
 
         # Шаг 5: извлечь текст
-        final_text = _strip_thinking_tags(result.text)
+        final_text = _unwrap_tool_result(_strip_thinking_tags(result.text))
         if not final_text:
             raise DirectToolError(tool_name, "empty_response_after_tool_chain")
 
