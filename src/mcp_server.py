@@ -9,6 +9,7 @@ import logging
 import unicodedata
 from typing import Optional
 from fastmcp import FastMCP
+from fastmcp.server.low_level import LowLevelServer
 from .onec_api_client import OneCApiClient, DirectToolError, _strip_thinking_tags
 
 # Настройка логирования
@@ -18,6 +19,20 @@ logger = logging.getLogger(__name__)
 
 # Инициализация FastMCP сервера
 mcp = FastMCP("1C_AI")
+
+# Monkey-patch: убираем extensions из capabilities, чтобы opencode корректно
+# парсил initialize-ответ (MCP spec 2024-11-05 не поддерживает extensions).
+_original_get_capabilities = LowLevelServer.get_capabilities
+
+
+def _patched_get_capabilities(self, notification_options, experimental_capabilities):
+    capabilities = _original_get_capabilities(self, notification_options, experimental_capabilities)
+    if hasattr(capabilities, "extensions"):
+        delattr(capabilities, "extensions")
+    return capabilities
+
+
+LowLevelServer.get_capabilities = _patched_get_capabilities
 
 # Глобальные переменные
 _api_client: Optional[OneCApiClient] = None
@@ -115,7 +130,7 @@ async def _call_direct_tool(upstream_tool: str, arguments: dict, fallback_prompt
     return f"Ошибка: инструмент {upstream_tool} не вернул результата."
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def ask_1c_ai(question: str, create_new_session: bool = False) -> str:
     """
     Ask a free-form question to the 1C:Naparnik AI assistant.
@@ -149,7 +164,7 @@ async def ask_1c_ai(question: str, create_new_session: bool = False) -> str:
         return f"Ошибка при обращении к 1C.ai: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def explain_1c_syntax(syntax_element: str, context: str = "") -> str:
     """
     Explain a specific 1C:Enterprise syntax element or language construct.
@@ -181,7 +196,7 @@ async def explain_1c_syntax(syntax_element: str, context: str = "") -> str:
         return f"Ошибка при обращении к 1C.ai: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def check_1c_code(code: str, check_type: str = "syntax") -> str:
     """
     Check 1C:Enterprise code for syntax errors, logical issues, and performance problems.
@@ -263,7 +278,7 @@ async def _send_with_tools(query: str) -> str:
     return await client.send_message_with_tool_chain(conversation_id, query)
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def review_1c_code(code: str) -> str:
     """
     Review 1C:Enterprise code for style, standards compliance, and best practices.
@@ -302,7 +317,7 @@ async def review_1c_code(code: str) -> str:
         return f"Ошибка при обращении к 1C.ai: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def rewrite_1c_code(code: str, goal: str = "") -> str:
     """
     Get AI-proposed rewrite of 1C:Enterprise code with best practices applied.
@@ -339,7 +354,7 @@ async def rewrite_1c_code(code: str, goal: str = "") -> str:
         return f"Ошибка при обращении к 1C.ai: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def modify_1c_code(instruction: str, code: str = "") -> str:
     """
     Modify 1C:Enterprise code according to an explicit user instruction.
@@ -374,7 +389,7 @@ async def modify_1c_code(instruction: str, code: str = "") -> str:
         return f"Ошибка при обращении к 1C.ai: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def its_help(query: str) -> str:
     """
     Search the 1C ITS (Information Technology Support) knowledge base.
@@ -407,7 +422,7 @@ async def its_help(query: str) -> str:
         return f"Ошибка при поиске по ИТС: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def fetch_its(id: str = "root") -> str:
     """
     Fetch content of a specific ITS document, catalog or database by its ID.
@@ -438,7 +453,7 @@ async def fetch_its(id: str = "root") -> str:
         return f"Ошибка при получении документа ИТС: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def search_1c_documentation(query: str, version: str = "v8.5.1") -> str:
     """
     Search 1C:Enterprise platform documentation for a specific version.
@@ -473,7 +488,7 @@ async def search_1c_documentation(query: str, version: str = "v8.5.1") -> str:
         return f"Ошибка при поиске в документации: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def onec_help(query: str) -> str:
     """
     Search 1C:Enterprise platform documentation (latest version).
@@ -506,7 +521,7 @@ async def onec_help(query: str) -> str:
         return f"Ошибка при поиске в документации: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def diff_1c_documentation_versions(version_a: str, version_b: str, query: str = "") -> str:
     """
     Compare 1C:Enterprise platform documentation between two versions.
@@ -545,7 +560,7 @@ async def diff_1c_documentation_versions(version_a: str, version_b: str, query: 
         return f"Ошибка при сравнении версий: {str(e)}"
 
 
-@mcp.tool()
+@mcp.tool(output_schema=None)
 async def config_help(query: str, config_name: str = "") -> str:
     """
     Search documentation for a specific 1C:Enterprise application (configuration).
