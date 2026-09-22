@@ -8,7 +8,10 @@ import httpx
 async def test_formats():
     """Тестирование различных форматов content."""
     
-    token = os.environ.get("ONEC_AI_TOKEN", "REDACTED_ONEC_AI_TOKEN")
+    token = os.environ.get("ONEC_AI_TOKEN", "")
+    if not token:
+        print("ONEC_AI_TOKEN не установлен (задайте переменную окружения или .env)")
+        return
     base_url = "https://code.1c.ai"
     conversation_id = None
     

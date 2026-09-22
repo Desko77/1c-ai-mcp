@@ -8,7 +8,10 @@ import httpx
 async def test_api():
     """Тестирование API 1C.ai."""
     
-    token = os.environ.get("ONEC_AI_TOKEN", "REDACTED_ONEC_AI_TOKEN")
+    token = os.environ.get("ONEC_AI_TOKEN", "")
+    if not token:
+        print("ONEC_AI_TOKEN не установлен (задайте переменную окружения или .env)")
+        return
     base_url = "https://code.1c.ai"
     
     print(f"Тестирование API: {base_url}")

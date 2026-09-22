@@ -8,7 +8,10 @@ import httpx
 async def test_message_api():
     """Тестирование API отправки сообщения."""
     
-    token = os.environ.get("ONEC_AI_TOKEN", "REDACTED_ONEC_AI_TOKEN")
+    token = os.environ.get("ONEC_AI_TOKEN", "")
+    if not token:
+        print("ONEC_AI_TOKEN не установлен (задайте переменную окружения или .env)")
+        return
     base_url = "https://code.1c.ai"
     conversation_id = "9b857f9e-dfa1-422c-b2c7-64aa71ee93fa"  # Используем созданную ранее
     
