@@ -23,6 +23,7 @@ services:
       SESSION_TTL: "3600"
       MCP_TOOL_CALL_MODE: "standard"
       ONEC_AI_INPUT_MAX_LENGTH: "100000"
+      FASTMCP_CHECK_FOR_UPDATES: "off"
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost',8007),2); s.close()\""]
