@@ -282,6 +282,7 @@ class OneCApiClient:
     ) -> str:
         """Отправить запрос и завершить последовательность внутренних tool_calls."""
         url = f"{self.base_url}/chat_api/v1/conversations/{conversation_id}/messages"
+        had_tool_calls = False
 
         for round_number in range(max_tool_rounds + 1):
             async with self.client.stream(
@@ -306,9 +307,15 @@ class OneCApiClient:
             if not parse_result.has_tool_calls:
                 if parse_result.has_only_reasoning:
                     return "Ошибка: API вернул только reasoning без итогового ответа"
-                clean_text = _unwrap_tool_result(_strip_thinking_tags(parse_result.text))
+                clean_text = _strip_thinking_tags(parse_result.text)
+                if had_tool_calls:
+                    clean_text = _unwrap_tool_result(clean_text)
+                if not clean_text:
+                    return "Ошибка: API не вернул текстовый ответ после цепочки tool_calls"
                 logger.info("Получен ответ для дискуссии %s", conversation_id)
                 return clean_text
+
+            had_tool_calls = True
 
             if not parse_result.tool_calls_data or not parse_result.assistant_uuid:
                 return "Ошибка: API вернул tool_calls без идентификатора сообщения"
@@ -337,6 +344,9 @@ class OneCApiClient:
         accumulated_delta = ""
         has_reasoning = False
         has_content_text = False
+        # Фрагменты delta.tool_calls накапливаются по index: OpenAI-формат
+        # передаёт id только в первом чанке, name/arguments - в следующих
+        tool_call_fragments: Dict[int, Dict[str, Any]] = {}
 
         response.encoding = 'utf-8'
 
@@ -380,7 +390,21 @@ class OneCApiClient:
                         if "tool_calls" in delta:
                             result.has_tool_calls = True
                             if isinstance(delta["tool_calls"], list):
-                                result.tool_calls_data = delta["tool_calls"]
+                                for frag in delta["tool_calls"]:
+                                    if not isinstance(frag, dict):
+                                        continue
+                                    idx = frag.get("index", 0)
+                                    entry = tool_call_fragments.setdefault(idx, {"function": {}})
+                                    if frag.get("id"):
+                                        entry["id"] = frag["id"]
+                                    if frag.get("type"):
+                                        entry["type"] = frag["type"]
+                                    fn = frag.get("function", {})
+                                    if isinstance(fn, dict):
+                                        if fn.get("name"):
+                                            entry["function"]["name"] = entry["function"].get("name", "") + fn["name"]
+                                        if fn.get("arguments"):
+                                            entry["function"]["arguments"] = entry["function"].get("arguments", "") + fn["arguments"]
                         if "content" in delta and delta["content"]:
                             accumulated_delta += delta["content"]
                         if delta.get("reasoning") or delta.get("reasoning_content"):
@@ -429,6 +453,13 @@ class OneCApiClient:
             # Маркер завершения — только для ответа ассистента, не для echo юзера
             if data.get("finished", False) and data.get("role") != "user":
                 break
+
+        # Собранные фрагменты delta.tool_calls применяются, только если полный
+        # список вызовов не пришёл (top-level или content.tool_calls)
+        if tool_call_fragments and not result.tool_calls_data:
+            result.tool_calls_data = [
+                tool_call_fragments[k] for k in sorted(tool_call_fragments)
+            ]
 
         # Приоритет: финальный content.text > накопленные дельты
         if has_content_text and result.text:
